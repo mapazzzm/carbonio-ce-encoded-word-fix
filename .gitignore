@@ -1,0 +1,6 @@
+# downloaded on demand by install.sh / run-tests.sh (integrity-checked)
+cfr-0.152.jar
+# build artifacts
+*.class
+*.jar
+!patches/*

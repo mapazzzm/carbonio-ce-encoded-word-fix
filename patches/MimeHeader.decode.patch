@@ -1,0 +1,140 @@
+--- a/com/zimbra/common/mime/MimeHeader.java
++++ b/com/zimbra/common/mime/MimeHeader.java
+@@ -155,6 +155,13 @@
+         Boolean encwspenc = Boolean.FALSE;
+         int questions = 0;
+         int wsplength = 0;
++        // RFC 2047 byte-joining fix: some mailers split a multi-octet character across two adjacent
++        // encoded-words. Decoding each word independently turns the split octets into U+FFFD. To
++        // recover, accumulate the *content octets* of a run of adjacent encoded-words that share the
++        // same charset and decode them together (matches JavaMail mail.mime.decodetext.strict=false).
++        java.io.ByteArrayOutputStream runOctets = null;
++        String runCharset = null;
++        int runStart = 0;
+         for (int pos = start; pos < end; ++pos) {
+             boolean isWhitespace;
+             byte c = content[pos];
+@@ -173,8 +180,14 @@
+                 boolean valid;
+                 builder.write(63);
+                 builder.write(61);
+-                String decoded = HeaderUtils.decodeWord(builder.toByteArray());
+-                boolean bl = valid = decoded != null;
++                byte[] word = builder.toByteArray();
++                String decoded = HeaderUtils.decodeWord(word);
++                valid = decoded != null;
++                // Only words the original decoder accepts are eligible for octet-level joining.
++                String wcs = valid ? MimeHeader.encodedWordCharset(word) : null;
++                byte[] woctets = wcs == null ? null : MimeHeader.encodedWordOctets(word);
++                boolean continuesRun = woctets != null && runOctets != null
++                        && encwspenc != Boolean.FALSE && runCharset.equalsIgnoreCase(wcs);
+                 if (valid) {
+                     ++pos;
+                 } else {
+@@ -183,7 +196,22 @@
+                 if (valid && encwspenc == Boolean.TRUE) {
+                     value = value.substring(0, value.length() - wsplength);
+                 }
+-                value = value == null ? decoded : value + decoded;
++                if (woctets != null) {
++                    if (continuesRun) {
++                        runOctets.write(woctets, 0, woctets.length);
++                    } else {
++                        runStart = value == null ? 0 : value.length();
++                        runOctets = new java.io.ByteArrayOutputStream();
++                        runOctets.write(woctets, 0, woctets.length);
++                        runCharset = wcs;
++                    }
++                    String runText = MimeHeader.decodeRunOctets(runOctets, runCharset);
++                    value = (runStart == 0 ? "" : value.substring(0, runStart)) + runText;
++                } else {
++                    runOctets = null;
++                    runCharset = null;
++                    value = value == null ? decoded : value + decoded;
++                }
+                 encwspenc = valid ? null : Boolean.FALSE;
+                 wsplength = 0;
+                 encoded = false;
+@@ -191,7 +219,7 @@
+                 continue;
+             }
+             builder.write(c);
+-            boolean bl = isWhitespace = c == 32 || c == 9;
++            isWhitespace = c == 32 || c == 9;
+             if (encoded || encwspenc == Boolean.FALSE) continue;
+             encwspenc = isWhitespace;
+             wsplength = isWhitespace ? wsplength + 1 : 0;
+@@ -202,6 +230,73 @@
+         return value == null ? "" : value;
+     }
+ 
++    // RFC 2047 byte-joining helpers (see decode()). Parsing mirrors HeaderUtils.decodeWord; the
++    // content octets are produced via the public HeaderUtils B/Q decoders, charset conversion is
++    // deferred so adjacent same-charset words can be joined at the octet level.
++    static String encodedWordCharset(byte[] word) {
++        int length = word.length;
++        if (length <= 8 || word[0] != 61 || word[1] != 63 || word[length - 2] != 63 || word[length - 1] != 61) {
++            return null;
++        }
++        int star = -1;
++        int pos;
++        for (pos = 2; pos < length && word[pos] != 63; ++pos) {
++            if (star == -1 && word[pos] == 42) {
++                star = pos;
++            }
++        }
++        if (pos >= length - 4 || pos == 2) {
++            return null;
++        }
++        return new String(word, 2, (star == -1 ? pos : star) - 2, java.nio.charset.StandardCharsets.US_ASCII);
++    }
++
++    static byte[] encodedWordOctets(byte[] word) {
++        int length = word.length;
++        if (length <= 8 || word[0] != 61 || word[1] != 63 || word[length - 2] != 63 || word[length - 1] != 61) {
++            return null;
++        }
++        int star = -1;
++        int pos;
++        for (pos = 2; pos < length && word[pos] != 63; ++pos) {
++            if (star == -1 && word[pos] == 42) {
++                star = pos;
++            }
++        }
++        if (pos >= length - 4 || pos == 2) {
++            return null;
++        }
++        byte encoding = word[++pos];
++        if (word[++pos] != 63) {
++            return null;
++        }
++        int remaining = length - pos - 3;
++        if (remaining < 0) {
++            return null;
++        }
++        if (remaining == 0) {
++            return new byte[0];
++        }
++        String text = new String(word, pos + 1, remaining, java.nio.charset.StandardCharsets.US_ASCII);
++        if (encoding == 81 || encoding == 113) {
++            return HeaderUtils.decodeQ2047(text);
++        }
++        if (encoding == 66 || encoding == 98) {
++            return HeaderUtils.decodeB2047(text);
++        }
++        return null;
++    }
++
++    static String decodeRunOctets(java.io.ByteArrayOutputStream octets, String charset) {
++        byte[] b = octets.toByteArray();
++        try {
++            return new String(b, CharsetUtil.normalizeCharset(charset));
++        }
++        catch (Exception e) {
++            return new String(b, DEFAULT_CHARSET);
++        }
++    }
++
+     static String unfold(String folded) {
+         char c;
+         int i;

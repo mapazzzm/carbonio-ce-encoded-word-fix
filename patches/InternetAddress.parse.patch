@@ -1,0 +1,92 @@
+--- a/com/zimbra/common/mime/InternetAddress.java
++++ b/com/zimbra/common/mime/InternetAddress.java
+@@ -235,9 +235,9 @@
+ 
+     private void parse(byte[] content, int start, int length, boolean angle) {
+         HeaderUtils.ByteBuilder builder = new HeaderUtils.ByteBuilder(length, this.charset);
+-        Object base = null;
++        String base = null;
+         String address = null;
+-        Object comment = null;
++        String comment = null;
+         boolean quoted = false;
+         boolean dliteral = false;
+         boolean escaped = false;
+@@ -249,6 +249,12 @@
+         boolean encoded = false;
+         Boolean encwspenc = Boolean.FALSE;
+         Boolean cencwspenc = Boolean.FALSE;
++        // RFC 2047 byte-joining fix for the display name (base): accumulate the content octets of a
++        // run of adjacent same-charset encoded-words and decode them together, so a multi-octet
++        // character split across two encoded-words is recovered instead of becoming U+FFFD.
++        java.io.ByteArrayOutputStream baseRunOctets = null;
++        String baseRunCharset = null;
++        int baseRunStart = 0;
+         int clevel = 0;
+         int questions = 0;
+         int end = start + length;
+@@ -300,8 +306,9 @@
+                 boolean valid;
+                 builder.write(63);
+                 builder.write(61);
+-                String decoded = HeaderUtils.decodeWord(builder.toByteArray());
+-                boolean bl = valid = decoded != null;
++                byte[] word = builder.toByteArray();
++                String decoded = HeaderUtils.decodeWord(word);
++                valid = decoded != null;
+                 if (valid) {
+                     ++pos;
+                 } else {
+@@ -312,7 +319,27 @@
+                     cwsp = false;
+                     cencwspenc = valid ? null : Boolean.FALSE;
+                 } else {
+-                    base = (String)(base == null ? "" : (valid && encwspenc == Boolean.TRUE ? ((String)base).substring(0, ((String)base).length() - 1) : base)) + decoded;
++                    String wcs = valid ? MimeHeader.encodedWordCharset(word) : null;
++                    byte[] woctets = wcs == null ? null : MimeHeader.encodedWordOctets(word);
++                    boolean continuesRun = woctets != null && baseRunOctets != null
++                            && encwspenc != Boolean.FALSE && baseRunCharset.equalsIgnoreCase(wcs);
++                    String b = base == null ? "" : (valid && encwspenc == Boolean.TRUE
++                            ? ((String)base).substring(0, ((String)base).length() - 1) : (String)base);
++                    if (woctets != null) {
++                        if (continuesRun) {
++                            baseRunOctets.write(woctets, 0, woctets.length);
++                        } else {
++                            baseRunStart = b.length();
++                            baseRunOctets = new java.io.ByteArrayOutputStream();
++                            baseRunOctets.write(woctets, 0, woctets.length);
++                            baseRunCharset = wcs;
++                        }
++                        base = b.substring(0, baseRunStart) + MimeHeader.decodeRunOctets(baseRunOctets, baseRunCharset);
++                    } else {
++                        baseRunOctets = null;
++                        baseRunCharset = null;
++                        base = b + decoded;
++                    }
+                     wsp = false;
+                     encwspenc = valid ? null : Boolean.FALSE;
+                 }
+@@ -326,6 +353,7 @@
+                     continue;
+                 }
+                 if (!escaped && c == 40 && clevel++ == 0) {
++                    baseRunOctets = null;
+                     if (!slop && !builder.isEmpty()) {
+                         if (angle) {
+                             address = builder.appendTo(address);
+@@ -364,6 +392,7 @@
+             }
+             if (slop) continue;
+             if (c == 34 && !encoded) {
++                baseRunOctets = null;
+                 if (!builder.isEmpty()) {
+                     if (angle) {
+                         address = builder.appendTo(address);
+@@ -382,6 +411,7 @@
+                 continue;
+             }
+             if (c == 60 && !angle) {
++                baseRunOctets = null;
+                 if (!builder.isEmpty()) {
+                     base = (String)(base == null ? "" : base) + (wsp ? builder.pop() : builder).toString();
+                 }
