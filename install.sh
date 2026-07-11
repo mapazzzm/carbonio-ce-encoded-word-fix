@@ -23,7 +23,7 @@ CFR_SHA256="f686e8f3ded377d7bc87d216a90e9e9512df4156e75b06c655a16648ae8765b2"
 for t in javac jar java; do
     [ -x "$JVM/bin/$t" ] || { echo "ERROR: $JVM/bin/$t not found (set CARBONIO_JVM)"; exit 1; }
 done
-command -v patch >/dev/null || { echo "ERROR: 'patch' not installed (apt-get install patch)"; exit 1; }
+command -v python3 >/dev/null || { echo "ERROR: python3 not installed"; exit 1; }
 
 LIVE="$(ls "$JARDIR"/zm-common-*.jar 2>/dev/null | grep -v '\.bak\.' | head -1)"
 [ -n "$LIVE" ] || { echo "ERROR: zm-common-*.jar not found in $JARDIR (set CARBONIO_JARDIR)"; exit 1; }
@@ -47,17 +47,26 @@ for f in com/zimbra/common/mime/MimeHeader.java com/zimbra/common/mime/InternetA
     [ -f "$WORK/src/$f" ] || { echo "ERROR: decompile failed for $f"; exit 1; }
 done
 
-# 3. Apply the source patches
-echo ">> Applying patches ..."
-patch -p1 -s -d "$WORK/src" < "$HERE/patches/MimeHeader.decode.patch" || {
-    echo "ERROR: MimeHeader patch did not apply cleanly."
-    echo "       Your Carbonio version likely differs from the one the patch targets."
-    echo "       Adapt patches/MimeHeader.decode.patch to the decompiled source manually."
-    exit 1; }
-patch -p1 -s -d "$WORK/src" < "$HERE/patches/InternetAddress.parse.patch" || {
-    echo "ERROR: InternetAddress patch did not apply cleanly (version mismatch)."
-    echo "       Adapt patches/InternetAddress.parse.patch manually."
-    exit 1; }
+# 3. Apply the source patches — SEMANTIC (anchored string replacements, not
+#    context .patch diffs), so they survive line-number/whitespace shifts and are
+#    IDEMPOTENT: an already-patched source is detected and skipped, so re-running
+#    (incl. over an older install, or twice without an apt upgrade in between) is
+#    safe instead of failing. The .patch files are kept for reference only.
+echo ">> Applying patches (semantic, idempotent) ..."
+if PATCH_OUT="$(python3 "$HERE/patches/apply_encoded_word_patches.py" "$WORK/src")"; then
+    echo "$PATCH_OUT" | sed 's/^STATUS:/   /'
+else
+    echo "$PATCH_OUT" | sed 's/^STATUS:/   /'
+    echo "ERROR: an anchor was not found — Carbonio changed this MIME code."
+    echo "       Re-derive patches/encoded_word_hunks.json from a fresh decompile."
+    exit 1
+fi
+# Idempotency: if every class was ALREADY patched, the live jar needs nothing —
+# skip the (expensive) recompile/repack so a re-run finishes cleanly.
+if ! echo "$PATCH_OUT" | grep -q 'STATUS:APPLIED'; then
+    echo ">> JAR already patched — nothing to do."
+    exit 0
+fi
 
 # 4. Compile the patched classes against the live jar
 echo ">> Compiling ..."

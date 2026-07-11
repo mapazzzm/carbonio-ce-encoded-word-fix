@@ -10,7 +10,7 @@ Recovers multi‑octet UTF‑8 characters that non‑compliant senders split acr
 **RFC 2047 encoded‑words**, which otherwise turns sender/recipient names (and subjects) into
 mojibake (`Sender‑nam`**`�`** instead of `Sender‑name`) in Carbonio.
 
-Протестировано на / Tested on **Carbonio CE 26.x** (`zm-common-4.25.2.jar`, Ubuntu Noble, JDK 21).
+Протестировано на / Tested on **Carbonio CE 26.3** (`zm-common-4.25.2.jar`) и **26.6** (`zm-common-4.27.13.jar`), Ubuntu 22.04 / 24.04, JDK 21. Идемпотентно — безопасно перезапускать / idempotent, safe to re-run.
 
 ---
 
@@ -183,9 +183,18 @@ Minimal changes contained in two `zm-common` classes:
 - **`InternetAddress.parse(...)`** — the display‑name path has its own inline decoder; it gets the
   same byte‑joining. The run is reset on quotes/comments/`<` so it never joins across non‑whitespace.
 
-`install.sh` **decompiles your own jar** (CFR 0.152), applies the patches in `patches/`, recompiles
-the touched classes and repackages the jar. No Carbonio source is shipped in this repo — the
-decompilation happens on your machine.
+`install.sh` **decompiles your own jar** (CFR 0.152), applies the fix with a **semantic, idempotent
+patcher** (`patches/apply_encoded_word_patches.py` — anchored string replacements, not line-numbered
+context diffs), recompiles the touched classes and repackages the jar. No Carbonio source is shipped
+in this repo — the decompilation happens on your machine.
+
+The patcher is **safe to re-run**: an already-patched source is detected (by method marker) and
+skipped, so running the installer twice, or over an older install without an `apt upgrade` in between,
+is a no-op instead of an error. Anchors match code *content*, so they tolerate line/whitespace shifts
+across Carbonio versions where this MIME code is unchanged (verified identical on `zm-common-4.25.2`
+= CE 26.3 and `zm-common-4.27.13` = CE 26.6). If Carbonio ever changes the code, the installer prints
+`NOTFOUND` and leaves your jar untouched rather than corrupting it. The legacy `patches/*.patch` files
+are kept for reference only. Runs on Ubuntu 22.04 and 24.04.
 
 ### Install
 
@@ -198,7 +207,7 @@ sleep 20
 chown zextras:zextras /opt/zextras/data/tmp/nginx/client   # Carbonio quirk after restart
 ```
 
-Needs `patch`, `curl` and the Carbonio‑bundled JDK (`/opt/zextras/common/lib/jvm/java`).
+Needs `python3`, `curl` and the Carbonio‑bundled JDK (`/opt/zextras/common/lib/jvm/java`).
 
 **Re‑run after `apt upgrade carbonio-appserver`** — the upgrade overwrites `zm-common-*.jar`.
 
